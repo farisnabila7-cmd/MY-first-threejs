@@ -33,25 +33,10 @@ export class ActivityManager {
         return
       }
 
-      this.lastActivityTime =
-        globalThis.performance.now()
-
-      /*
-       * Activity while already active only
-       * refreshes the idle deadline.
-       *
-       * It must NOT trigger another onActive()
-       * callback.
-       */
+      this.lastActivityTime = globalThis.performance.now()
       if (this.active) {
         return
       }
-
-      /*
-       * Transition:
-       *
-       * idle → active
-       */
       this.active = true
 
       this.scheduleIdleCheck(
@@ -63,13 +48,6 @@ export class ActivityManager {
 
   private readonly handleIdleCheck =
     (): void => {
-      /*
-       * The timeout has been consumed.
-       *
-       * A new timeout may now be scheduled if
-       * activity occurred during the previous
-       * waiting period.
-       */
       this.timeout = null
 
       if (
@@ -85,15 +63,6 @@ export class ActivityManager {
       const elapsed =
         now -
         this.lastActivityTime
-
-      /*
-       * Activity occurred after the timeout was
-       * originally scheduled.
-       *
-       * Do not become idle yet.
-       *
-       * Schedule only the remaining portion.
-       */
       if (
         elapsed <
         IDLE_TIMEOUT_MS
@@ -105,22 +74,9 @@ export class ActivityManager {
 
         return
       }
-
-      /*
-       * Already idle.
-       *
-       * This protects against duplicate lifecycle
-       * transitions.
-       */
       if (!this.active) {
         return
       }
-
-      /*
-       * Transition:
-       *
-       * active → idle
-       */
       this.active = false
 
       this.listener.onIdle()
@@ -151,12 +107,6 @@ export class ActivityManager {
     this.scheduleIdleCheck(
       IDLE_TIMEOUT_MS,
     )
-
-    /*
-     * Initial lifecycle transition:
-     *
-     * stopped → active
-     */
     this.listener.onActive()
   }
 
@@ -197,13 +147,6 @@ export class ActivityManager {
     if (this.disposed) {
       return
     }
-
-    /*
-     * Disposal is terminal.
-     *
-     * No future activity may reactivate this
-     * manager.
-     */
     this.disposed = true
     this.started = false
     this.active = false
