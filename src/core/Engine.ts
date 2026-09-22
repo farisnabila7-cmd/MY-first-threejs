@@ -1,30 +1,16 @@
-import {
-  Color,
-  PerspectiveCamera,
-} from 'three'
-
+import { Color, PerspectiveCamera } from 'three'
 import { Renderer } from '../rendering/Renderer'
 import type { RendererStats } from '../rendering/Renderer'
 import { Viewport } from './Viewport'
 import { World } from '../scene/World'
 import { RenderScheduler } from './RenderScheduler'
-import {
-  OrbitController,
-} from '../interaction/OrbitController'
+import { OrbitController } from '../interaction/OrbitController'
 
 const CAMERA_FOV = 60
 const CAMERA_NEAR = 0.1
 const CAMERA_FAR = 1000
-
 const SCENE_BACKGROUND = 0x0b1120
 
-/**
- * Demand-driven engine.
- *
- * Rendering happens only when something asked for it
- * (requestRender) or while the camera is still settling
- * (OrbitControls damping). A static scene costs 0 frames.
- */
 export class Engine {
   private readonly world: World
   private readonly camera: PerspectiveCamera
@@ -33,24 +19,14 @@ export class Engine {
   private readonly scheduler: RenderScheduler
   private readonly orbitController: OrbitController
   private readonly resizeObserver: ResizeObserver
-
-  private readonly cameraMovedListeners =
-    new Set<() => void>()
+  private readonly cameraMovedListeners = new Set<() => void>()
 
   private cameraDirty = false
   private started = false
   private disposed = false
 
-  /*
-   * ResizeObserver runs right before paint. Resizing
-   * clears the canvas, so we must draw in the same
-   * callback, otherwise one blank frame flashes.
-   */
   private readonly handleResize = (): void => {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.resize()
     this.render()
   }
@@ -61,55 +37,42 @@ export class Engine {
 
   constructor(container: HTMLElement) {
     this.world = new World()
+    this.world.scene.background = new Color(SCENE_BACKGROUND)
 
-    this.world.scene.background =
-      new Color(SCENE_BACKGROUND)
+    this.camera = new PerspectiveCamera(
+      CAMERA_FOV,
+      1,
+      CAMERA_NEAR,
+      CAMERA_FAR,
+    )
 
-    this.camera =
-      new PerspectiveCamera(
-        CAMERA_FOV,
-        1,
-        CAMERA_NEAR,
-        CAMERA_FAR,
-      )
+    this.renderer = new Renderer(container)
+    this.viewport = new Viewport(container)
 
-    this.renderer =
-      new Renderer(container)
+    this.scheduler = new RenderScheduler({
+      frame: deltaTime => this.frame(deltaTime),
+    })
 
-    this.viewport =
-      new Viewport(container)
-
-    this.scheduler =
-      new RenderScheduler({
-        frame: deltaTime => this.frame(deltaTime),
-      })
-
-    this.orbitController =
-      new OrbitController(
-        this.camera,
-        this.renderer.domElement,
-        {
-          onStart: () => {
-            this.requestRender()
-          },
-
-          onChange: () => {
-            this.cameraDirty = true
-            this.requestRender()
-          },
-
-          onEnd: () => {
-            // Damping inertia continues after release.
-            this.requestRender()
-          },
+    this.orbitController = new OrbitController(
+      this.camera,
+      this.renderer.domElement,
+      {
+        onStart: () => {
+          this.requestRender()
         },
-      )
+        onChange: () => {
+          this.cameraDirty = true
+          this.requestRender()
+        },
+        onEnd: () => {
+          this.requestRender()
+        },
+      },
+    )
 
     this.resize()
 
-    this.resizeObserver =
-      new ResizeObserver(this.handleResize)
-
+    this.resizeObserver = new ResizeObserver(this.handleResize)
     this.resizeObserver.observe(container)
 
     this.renderer.domElement.addEventListener(
@@ -135,71 +98,35 @@ export class Engine {
   }
 
   start(): void {
-    if (
-      this.disposed ||
-      this.started
-    ) {
-      return
-    }
-
+    if (this.disposed || this.started) return
     this.started = true
-
     this.requestRender()
   }
 
   stop(): void {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return
-    }
-
+    if (this.disposed || !this.started) return
     this.started = false
-
     this.scheduler.cancel()
   }
 
-  /**
-   * The single entry point for "something visual
-   * changed". Coalesced: call it as often as needed.
-   */
   requestRender(): void {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return
-    }
-
+    if (this.disposed || !this.started) return
     this.scheduler.invalidate()
   }
 
   /**
-   * Notified (before the frame renders) whenever the
-   * camera actually moved: drag, wheel, inertia, reset.
-   * Used to re-evaluate hover under a stationary pointer.
+   * @param listener Dipanggil ketika camera berubah
+   * @returns Fungsi untuk unsubscribe listener
    */
-  subscribeCameraMoved(
-    listener: () => void,
-  ): () => void {
+  subscribeCameraMoved(listener: () => void): () => void {
     this.cameraMovedListeners.add(listener)
-
     return () => {
       this.cameraMovedListeners.delete(listener)
     }
   }
 
   resetView(): void {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return
-    }
-
-    // reset() fires 'change', which marks the camera
-    // dirty and schedules exactly one frame.
+    if (this.disposed || !this.started) return
     this.orbitController.reset()
   }
 
@@ -208,10 +135,7 @@ export class Engine {
   }
 
   dispose(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.disposed = true
     this.started = false
 
@@ -223,7 +147,6 @@ export class Engine {
     )
 
     this.cameraMovedListeners.clear()
-
     this.scheduler.dispose()
     this.orbitController.dispose()
     this.world.dispose()
@@ -231,32 +154,20 @@ export class Engine {
   }
 
   /**
-   * One frame = advance camera, let listeners react,
-   * render ONCE. Returns true only while the camera
-   * is still moving.
+   * @param deltaTime Waktu
+   * @returns true camera masih bergerak
    */
   private frame(deltaTime: number): boolean {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return false
-    }
+    if (this.disposed || !this.started) return false
 
-    const cameraMoving =
-      this.orbitController.update(deltaTime)
+    const cameraMoving = this.orbitController.update(deltaTime)
 
-    if (
-      cameraMoving ||
-      this.cameraDirty
-    ) {
+    if (cameraMoving || this.cameraDirty) {
       this.cameraDirty = false
-
       this.notifyCameraMoved()
     }
 
     this.render()
-
     return cameraMoving
   }
 
@@ -267,33 +178,16 @@ export class Engine {
   }
 
   private render(): void {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return
-    }
-
-    this.renderer.render(
-      this.world.scene,
-      this.camera,
-    )
+    if (this.disposed || !this.started) return
+    this.renderer.render(this.world.scene, this.camera)
   }
 
   private resize(): void {
-    const {
-      width,
-      height,
-    } = this.viewport.size
+    const { width, height } = this.viewport.size
 
-    this.camera.aspect =
-      this.viewport.aspectRatio
-
+    this.camera.aspect = this.viewport.aspectRatio
     this.camera.updateProjectionMatrix()
 
-    this.renderer.resize(
-      width,
-      height,
-    )
+    this.renderer.resize(width, height)
   }
 }
