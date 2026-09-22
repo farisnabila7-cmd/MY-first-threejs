@@ -1,10 +1,22 @@
-import type { MeshBasicMaterial } from 'three';
-import type { PeriodicTableCategory } from '../../domain/periodic-table/PeriodicTableElement';
+import type { Color } from 'three'
 
-const SELECTION_COLOR = 0xffffff;
-const HOVER_BRIGHTNESS = 0.12;
-const HOVER_SCALE = 1.06;
-const SELECTED_SCALE = 1.1;
+import type {
+  PeriodicTableCategory,
+} from '../../domain/periodic-table/PeriodicTableElement'
+
+export type TileVisualState =
+  | 'normal'
+  | 'hover'
+  | 'selected'
+
+const SELECTION_COLOR = 0xffffff
+const HOVER_BRIGHTNESS = 0.12
+
+const SCALE_BY_STATE: Record<TileVisualState, number> = {
+  normal: 1,
+  hover: 1.06,
+  selected: 1.1,
+}
 
 const CATEGORY_COLORS: Record<PeriodicTableCategory, number> = {
   'alkali-metal': 0xef4444,
@@ -17,35 +29,36 @@ const CATEGORY_COLORS: Record<PeriodicTableCategory, number> = {
   'noble-gas': 0x3b82f6,
   lanthanide: 0x8b5cf6,
   actinide: 0xa855f7,
-};
+}
 
+/**
+ * Pure visual mapping: (base color, state) -> color/scale.
+ * It owns no three.js resources and holds no state.
+ */
 export class PeriodicTableVisual {
   getBaseColor(category: PeriodicTableCategory): number {
-    return CATEGORY_COLORS[category];
+    return CATEGORY_COLORS[category]
   }
 
-  applyBase(material: MeshBasicMaterial, color: number): void {
-    material.color.setHex(color);
+  /** Writes the resolved tile color into `target`. */
+  resolveColor(
+    target: Color,
+    baseColor: number,
+    state: TileVisualState,
+  ): void {
+    if (state === 'selected') {
+      target.setHex(SELECTION_COLOR)
+      return
+    }
+
+    target.setHex(baseColor)
+
+    if (state === 'hover') {
+      target.offsetHSL(0, 0, HOVER_BRIGHTNESS)
+    }
   }
 
-  applyHover(material: MeshBasicMaterial, baseColor: number): void {
-    material.color.setHex(baseColor);
-    material.color.offsetHSL(0, 0, HOVER_BRIGHTNESS);
-  }
-
-  applySelected(material: MeshBasicMaterial): void {
-    material.color.setHex(SELECTION_COLOR);
-  }
-
-  getHoverScale(): number {
-    return HOVER_SCALE;
-  }
-
-  getSelectedScale(): number {
-    return SELECTED_SCALE;
-  }
-
-  getNormalScale(): number {
-    return 1;
+  getScale(state: TileVisualState): number {
+    return SCALE_BY_STATE[state]
   }
 }

@@ -1,43 +1,46 @@
-import type { Mesh } from 'three';
+/**
+ * Tiles never overlap (pitch 1.05 > tile 0.9), so a
+ * point can belong to at most one cell. Cells are sized
+ * to the pitch, not the visible tile: the 0.15 gap
+ * between tiles belongs to the nearest tile, which
+ * removes hover flicker when the pointer crosses gaps.
+ */
+const CELL_HALF_EXTENT = 0.525
 
-interface SpatialEntry {
-  readonly mesh: Mesh;
-  readonly x: number;
-  readonly y: number;
+export interface SpatialEntry {
+  readonly x: number
+  readonly y: number
 }
 
-const PICK_RADIUS = 0.45;
-const PICK_RADIUS_SQUARED = PICK_RADIUS * PICK_RADIUS;
+export class PeriodicTableSpatialIndex<
+  T extends SpatialEntry,
+> {
+  private readonly entries: T[] = []
 
-export class PeriodicTableSpatialIndex {
-  private readonly entries: SpatialEntry[] = [];
-
-  register(mesh: Mesh, x: number, y: number): void {
-    this.entries.push({ mesh, x, y });
+  register(entry: T): void {
+    this.entries.push(entry)
   }
 
-  getAtWorldPosition(x: number, y: number): Mesh | null {
-    let closestMesh: Mesh | null = null;
-    let closestDistanceSquared = Number.POSITIVE_INFINITY;
-
+  getAtWorldPosition(
+    x: number,
+    y: number,
+  ): T | null {
     for (const entry of this.entries) {
-      const dx = x - entry.x;
-      const dy = y - entry.y;
-      const distanceSquared = (dx * dx) + (dy * dy);
+      const insideX =
+        Math.abs(x - entry.x) <= CELL_HALF_EXTENT
 
-      const isInsidePickRadius = distanceSquared <= PICK_RADIUS_SQUARED;
-      const isCloser = distanceSquared < closestDistanceSquared;
+      const insideY =
+        Math.abs(y - entry.y) <= CELL_HALF_EXTENT
 
-      if (isInsidePickRadius && isCloser) {
-        closestDistanceSquared = distanceSquared;
-        closestMesh = entry.mesh;
+      if (insideX && insideY) {
+        return entry
       }
     }
 
-    return closestMesh;
+    return null
   }
 
   clear(): void {
-    this.entries.length = 0;
+    this.entries.length = 0
   }
 }

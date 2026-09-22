@@ -1,240 +1,358 @@
-import type { Camera, Object3D } from 'three';
-import { Plane, Ray, Vector2, Vector3 } from 'three';
-import type { PeriodicTableElement } from '../../domain/periodic-table/PeriodicTableElement';
-import type { PeriodicTableView } from './03-PeriodicTableView';
+import type { Camera } from 'three'
+import { Plane, Ray, Vector3 } from 'three'
+import type { PeriodicTableElement } from '../../domain/periodic-table/PeriodicTableElement'
+import type { PeriodicTableView } from './03-PeriodicTableView'
 
-const MAX_CLICK_MOVEMENT_SQUARED = 25;
+const DRAG_THRESHOLD_SQUARED = 25
+
+/**
+ * Who owns the pointer right now?
+ *
+ *  idle       -> hover owns it (mouse/pen only)
+ *  pressed    -> a button is down, undecided: click or drag?
+ *  navigating -> drag confirmed; OrbitControls owns it.
+ *               Hover is cleared and suppressed.
+ *
+ * Any button counts (LMB orbit, RMB pan, MMB dolly), so
+ * there is no per-button special casing for hover.
+ */
+type PointerPhase = 'idle' | 'pressed' | 'navigating'
+
+export interface PeriodicTableInteractionOptions {
+  readonly camera: Camera
+  readonly element: HTMLElement
+  readonly view: PeriodicTableView
+  readonly onSelect: (element: PeriodicTableElement) => void
+  readonly requestRender: () => void
+}
 
 export class PeriodicTableInteraction {
-  private readonly camera: Camera;
-  private readonly element: HTMLElement;
-  private readonly view: PeriodicTableView;
-  private readonly onSelect: (element: PeriodicTableElement) => void;
+  private readonly camera: Camera
+  private readonly element: HTMLElement
+  private readonly view: PeriodicTableView
+  private readonly onSelect: (element: PeriodicTableElement) => void
+  private readonly requestRender: () => void
 
-  /**
-   * Persistent math objects.
-   * Reused for every interaction.
-   */
-  private readonly pointer = new Vector2();
-  private readonly ray = new Ray();
-  private readonly tablePlane = new Plane(new Vector3(0, 0, 1), 0);
-  private readonly worldPoint = new Vector3();
+  /** Persistent math objects: no allocation per pick. */
+  private readonly ray = new Ray()
+  private readonly tablePlane = new Plane(new Vector3(0, 0, 1), 0)
+  private readonly worldPoint = new Vector3()
 
-  /**
-   * Cached DOM bounds.
-   */
-  private boundsLeft = 0;
-  private boundsTop = 0;
-  private boundsWidth = 0;
-  private boundsHeight = 0;
+  private phase: PointerPhase = 'idle'
+  private pressPointerId: number | null = null
+  private pressButton = 0
+  private pressX = 0
+  private pressY = 0
 
-  /**
-   * Click tracking.
-   */
-  private pointerDownX = 0;
-  private pointerDownY = 0;
-  private hasPointerDown = false;
+  /** Last pointer position, relative to the canvas. */
+  private pointerX = 0
+  private pointerY = 0
+  private hasPointer = false
+  private hoverCapable = true
 
-  /**
-   * Pointer hover state.
-   */
-  private pointerX = 0;
-  private pointerY = 0;
-  private pointerDirty = false;
-  private hoverFrameRequested = false;
-  private hoverFrame: number | null = null;
-  private hoveredObject: Object3D | null = null;
-  private resizeObserver: ResizeObserver | null = null;
-  private disposed = false;
+  private cursor = ''
+  private disposed = false
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (this.disposed || event.button !== 0) {
-      return;
-    }
-    this.pointerDownX = event.clientX;
-    this.pointerDownY = event.clientY;
-    this.hasPointerDown = true;
-  };
-
-  private readonly handlePointerUp = (event: PointerEvent): void => {
-    if (this.disposed || event.button !== 0) {
-      return;
-    }
-    if (!this.hasPointerDown) {
-      return;
+    if (this.disposed || !event.isPrimary) {
+      return
     }
 
-    const deltaX = event.clientX - this.pointerDownX;
-    const deltaY = event.clientY - this.pointerDownY;
-    this.hasPointerDown = false;
+    this.phase = 'pressed'
+    this.pressPointerId = event.pointerId
+    this.pressButton = event.button
+    this.pressX = event.clientX
+    this.pressY = event.clientY
 
-    const movement = (deltaX * deltaX) + (deltaY * deltaY);
-    if (movement > MAX_CLICK_MOVEMENT_SQUARED) {
-      return;
-    }
-
-    this.selectAt(event.clientX, event.clientY);
-  };
+    this.trackPointer(event)
+  }
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
     if (this.disposed) {
-      return;
+      return
     }
-    this.pointerX = event.clientX;
-    this.pointerY = event.clientY;
-    this.pointerDirty = true;
-    this.requestHoverFrame();
-  };
+
+    if (
+      this.phase !== 'idle' &&
+      event.pointerId !== this.pressPointerId
+    ) {
+      return
+    }
+
+    this.trackPointer(event)
+
+    if (this.phase === 'pressed') {
+      this.promoteIfDragging(event)
+      return
+    }
+
+    if (this.phase === 'idle') {
+      this.refreshHover()
+    }
+  }
+
+  private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (
+      this.disposed ||
+      event.pointerId !== this.pressPointerId
+    ) {
+      return
+    }
+
+    const isClick =
+      this.phase === 'pressed' &&
+      this.pressButton === 0 &&
+      event.button === 0
+
+    this.phase = 'idle'
+    this.pressPointerId = null
+
+    this.trackPointer(event)
+
+    if (isClick) {
+      this.selectAtPointer()
+    }
+
+    // Reacquire hover under the pointer without waiting
+    // for the next mouse move.
+    this.refreshHover()
+    this.updateCursor()
+  }
+
+  private readonly handlePointerCancel = (): void => {
+    this.abortGesture()
+  }
+
+  /*
+   * Also fires after a NORMAL pointerup (capture is
+   * released implicitly). At that point phase is already
+   * 'idle', so it must not clear the hover we just set.
+   */
+  private readonly handleLostCapture = (): void => {
+    if (this.phase !== 'idle') {
+      this.abortGesture()
+    }
+  }
 
   private readonly handlePointerLeave = (): void => {
     if (this.disposed) {
-      return;
+      return
     }
-    this.pointerDirty = false;
-    if (!this.hoveredObject) {
-      return;
+
+    this.hasPointer = false
+
+    if (this.phase === 'idle') {
+      this.clearHover()
     }
-    this.hoveredObject = null;
-    this.view.setHovered(null);
-  };
+  }
 
-  private readonly processHoverFrame = (): void => {
-    this.hoverFrame = null;
-    this.hoverFrameRequested = false;
-
-    if (this.disposed || !this.pointerDirty) {
-      return;
+  /**
+   * Bound so it can be passed straight to the engine.
+   * Camera moved under a (possibly stationary) pointer:
+   * wheel zoom, damping inertia, reset. Re-pick, but
+   * never while a drag owns the pointer.
+   */
+  readonly handleCameraMoved = (): void => {
+    if (this.disposed || this.phase !== 'idle') {
+      return
     }
-    this.pointerDirty = false;
-    this.hoverAt(this.pointerX, this.pointerY);
-  };
 
-  private readonly handleResize = (): void => {
-    if (this.disposed) {
-      return;
-    }
-    this.refreshBounds();
-  };
+    this.refreshHover()
+  }
 
-  constructor(
-    camera: Camera,
-    element: HTMLElement,
-    view: PeriodicTableView,
-    onSelect: (element: PeriodicTableElement) => void,
-  ) {
-    this.camera = camera;
-    this.element = element;
-    this.view = view;
-    this.onSelect = onSelect;
+  constructor(options: PeriodicTableInteractionOptions) {
+    this.camera = options.camera
+    this.element = options.element
+    this.view = options.view
+    this.onSelect = options.onSelect
+    this.requestRender = options.requestRender
 
-    this.refreshBounds();
-
-    this.resizeObserver = new ResizeObserver(this.handleResize);
-    this.resizeObserver.observe(this.element);
-
-    this.element.addEventListener('pointerdown', this.handlePointerDown);
-    this.element.addEventListener('pointerup', this.handlePointerUp);
-    this.element.addEventListener('pointermove', this.handlePointerMove);
-    this.element.addEventListener('pointerleave', this.handlePointerLeave);
+    this.element.addEventListener('pointerdown', this.handlePointerDown)
+    this.element.addEventListener('pointerup', this.handlePointerUp)
+    this.element.addEventListener('pointermove', this.handlePointerMove)
+    this.element.addEventListener('pointerleave', this.handlePointerLeave)
+    this.element.addEventListener('pointercancel', this.handlePointerCancel)
+    this.element.addEventListener('lostpointercapture', this.handleLostCapture)
   }
 
   dispose(): void {
     if (this.disposed) {
-      return;
-    }
-    this.disposed = true;
-
-    this.element.removeEventListener('pointerdown', this.handlePointerDown);
-    this.element.removeEventListener('pointerup', this.handlePointerUp);
-    this.element.removeEventListener('pointermove', this.handlePointerMove);
-    this.element.removeEventListener('pointerleave', this.handlePointerLeave);
-
-    this.resizeObserver?.disconnect();
-    this.resizeObserver = null;
-
-    if (this.hoverFrame !== null) {
-      cancelAnimationFrame(this.hoverFrame);
-      this.hoverFrame = null;
+      return
     }
 
-    this.pointerDirty = false;
-    this.hoverFrameRequested = false;
-    this.hasPointerDown = false;
-    this.hoveredObject = null;
+    this.disposed = true
+
+    this.element.removeEventListener('pointerdown', this.handlePointerDown)
+    this.element.removeEventListener('pointerup', this.handlePointerUp)
+    this.element.removeEventListener('pointermove', this.handlePointerMove)
+    this.element.removeEventListener('pointerleave', this.handlePointerLeave)
+    this.element.removeEventListener('pointercancel', this.handlePointerCancel)
+    this.element.removeEventListener('lostpointercapture', this.handleLostCapture)
+
+    this.element.style.cursor = ''
+
+    this.phase = 'idle'
+    this.pressPointerId = null
+    this.hasPointer = false
   }
 
-  private requestHoverFrame(): void {
-    if (this.disposed || this.hoverFrameRequested) {
-      return;
-    }
-    this.hoverFrameRequested = true;
-    this.hoverFrame = requestAnimationFrame(this.processHoverFrame);
+  private trackPointer(event: PointerEvent): void {
+    // offsetX/Y are relative to the canvas: no
+    // getBoundingClientRect, no cached bounds to go stale.
+    this.pointerX = event.offsetX
+    this.pointerY = event.offsetY
+    this.hasPointer = true
+    this.hoverCapable = event.pointerType !== 'touch'
   }
 
-  private refreshBounds(): void {
-    const bounds = this.element.getBoundingClientRect();
-    this.boundsLeft = bounds.left;
-    this.boundsTop = bounds.top;
-    this.boundsWidth = bounds.width;
-    this.boundsHeight = bounds.height;
-  }
+  private promoteIfDragging(event: PointerEvent): void {
+    const deltaX = event.clientX - this.pressX
+    const deltaY = event.clientY - this.pressY
 
-  private selectAt(clientX: number, clientY: number): void {
-    const mesh = this.getMeshAtPointer(clientX, clientY);
-    if (!mesh) {
-      return;
+    const movedSquared = (deltaX * deltaX) + (deltaY * deltaY)
+
+    if (movedSquared <= DRAG_THRESHOLD_SQUARED) {
+      return
     }
 
-    const element = this.view.getElement(mesh);
+    this.phase = 'navigating'
+
+    this.clearHover()
+    this.updateCursor()
+  }
+
+  private abortGesture(): void {
+    if (this.disposed) {
+      return
+    }
+
+    this.phase = 'idle'
+    this.pressPointerId = null
+
+    this.clearHover()
+    this.updateCursor()
+  }
+
+  private refreshHover(): void {
+    if (!this.hasPointer || !this.hoverCapable) {
+      return
+    }
+
+    if (this.view.setHovered(this.pickAtPointer())) {
+      this.requestRender()
+    }
+
+    this.updateCursor()
+  }
+
+  private clearHover(): void {
+    if (this.view.setHovered(null)) {
+      this.requestRender()
+    }
+
+    this.updateCursor()
+  }
+
+  private selectAtPointer(): void {
+    const id = this.pickAtPointer()
+
+    if (id === null) {
+      return
+    }
+
+    const element = this.view.getElement(id)
+
     if (!element) {
-      return;
+      return
     }
 
-    this.view.setSelected(mesh);
-    this.onSelect(element);
+    if (this.view.setSelected(id)) {
+      this.requestRender()
+    }
+
+    this.onSelect(element)
   }
 
-  private hoverAt(clientX: number, clientY: number): void {
-    const mesh = this.getMeshAtPointer(clientX, clientY);
-    if (!mesh) {
-      if (!this.hoveredObject) {
-        return;
-      }
-      this.hoveredObject = null;
-      this.view.setHovered(null);
-      return;
+  private updateCursor(): void {
+    const next = this.resolveCursor()
+
+    if (next === this.cursor) {
+      return
     }
 
-    if (this.hoveredObject === mesh) {
-      return;
-    }
-
-    this.hoveredObject = mesh;
-    this.view.setHovered(mesh);
+    this.cursor = next
+    this.element.style.cursor = next
   }
 
-  private getMeshAtPointer(clientX: number, clientY: number): Object3D | null {
-    const { boundsLeft, boundsTop, boundsWidth, boundsHeight } = this;
-    if (boundsWidth <= 0 || boundsHeight <= 0) {
-      return null;
+  private resolveCursor(): string {
+    if (this.phase === 'navigating') {
+      return 'grabbing'
     }
 
-    // Ditambahkan tanda kurung ekstra untuk memisahkan perkalian (*) dan pengurangan (-)
-    this.pointer.x = (((clientX - boundsLeft) / boundsWidth) * 2) - 1;
-    this.pointer.y = -((((clientY - boundsTop) / boundsHeight) * 2) - 1);
-
-    this.ray.origin.setFromMatrixPosition(this.camera.matrixWorld);
-    this.ray.direction
-      .set(this.pointer.x, this.pointer.y, 0.5)
-      .unproject(this.camera)
-      .sub(this.ray.origin)
-      .normalize();
-
-    const intersection = this.ray.intersectPlane(this.tablePlane, this.worldPoint);
-    if (!intersection) {
-      return null;
+    if (this.view.hoveredTileId !== null) {
+      return 'pointer'
     }
 
-    return this.view.getMeshAtWorldPosition(this.worldPoint.x, this.worldPoint.y);
+    return ''
+  }
+
+  private pickAtPointer(): number | null {
+  const width = this.element.clientWidth
+  const height = this.element.clientHeight
+
+  if (width <= 0 || height <= 0) {
+    return null
+  }
+
+  // matrixWorld lags OrbitControls until the next render.
+  this.camera.updateMatrixWorld()
+
+  const ndcX =
+    ((this.pointerX / width) * 2) - 1
+
+  const ndcY =
+    1 - ((this.pointerY / height) * 2)
+
+  this.ray.origin.setFromMatrixPosition(
+    this.camera.matrixWorld,
+  )
+
+  this.ray.direction
+    .set(ndcX, ndcY, 0.5)
+    .unproject(this.camera)
+    .sub(this.ray.origin)
+    .normalize()
+
+  // Intersect the face the user actually sees,
+  // not z=0.
+  //
+  // This prevents oblique views from mis-picking
+  // because of the tile depth.
+  const faceZ =
+    this.view.frontFaceZ
+
+  const seesFront =
+    this.ray.origin.z >= 0
+
+  if (seesFront) {
+    this.tablePlane.constant = -faceZ
+  } else {
+    this.tablePlane.constant = faceZ
+  }
+
+  const hit =
+    this.ray.intersectPlane(
+      this.tablePlane,
+      this.worldPoint,
+    )
+
+  if (!hit) {
+    return null
+  }
+
+  return this.view.pick(
+    hit.x,
+    hit.y,
+    )
   }
 }

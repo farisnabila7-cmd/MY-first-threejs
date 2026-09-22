@@ -4,12 +4,10 @@ import {
 } from 'three'
 
 import { Renderer } from '../rendering/Renderer'
+import type { RendererStats } from '../rendering/Renderer'
 import { Viewport } from './Viewport'
 import { World } from '../scene/World'
-import { FrameLoop } from './FrameLoop'
-import {
-  ActivityManager,
-} from './ActivityManager'
+import { RenderScheduler } from './RenderScheduler'
 import {
   OrbitController,
 } from '../interaction/OrbitController'
@@ -20,32 +18,45 @@ const CAMERA_FAR = 1000
 
 const SCENE_BACKGROUND = 0x0b1120
 
+/**
+ * Demand-driven engine.
+ *
+ * Rendering happens only when something asked for it
+ * (requestRender) or while the camera is still settling
+ * (OrbitControls damping). A static scene costs 0 frames.
+ */
 export class Engine {
   private readonly world: World
   private readonly camera: PerspectiveCamera
   private readonly renderer: Renderer
   private readonly viewport: Viewport
-
-  private readonly frameLoop: FrameLoop
-  private readonly activityManager: ActivityManager
+  private readonly scheduler: RenderScheduler
   private readonly orbitController: OrbitController
+  private readonly resizeObserver: ResizeObserver
 
+  private readonly cameraMovedListeners =
+    new Set<() => void>()
+
+  private cameraDirty = false
   private started = false
   private disposed = false
 
+  /*
+   * ResizeObserver runs right before paint. Resizing
+   * clears the canvas, so we must draw in the same
+   * callback, otherwise one blank frame flashes.
+   */
   private readonly handleResize = (): void => {
     if (this.disposed) {
       return
     }
 
     this.resize()
+    this.render()
+  }
 
-    if (
-      this.started &&
-      this.activityManager.isActive()
-    ) {
-      this.render()
-    }
+  private readonly handleContextRestored = (): void => {
+    this.requestRender()
   }
 
   constructor(container: HTMLElement) {
@@ -68,68 +79,42 @@ export class Engine {
     this.viewport =
       new Viewport(container)
 
+    this.scheduler =
+      new RenderScheduler({
+        frame: deltaTime => this.frame(deltaTime),
+      })
+
     this.orbitController =
       new OrbitController(
         this.camera,
         this.renderer.domElement,
         {
           onStart: () => {
-            this.handleOrbitStart()
+            this.requestRender()
           },
 
           onChange: () => {
-            this.handleOrbitChange()
+            this.cameraDirty = true
+            this.requestRender()
           },
 
           onEnd: () => {
-            this.handleOrbitEnd()
+            // Damping inertia continues after release.
+            this.requestRender()
           },
         },
       )
 
-    this.frameLoop =
-    new FrameLoop({
-    update: deltaTime => {
-      if (
-        !this.started ||
-        this.activityManager.isIdle()
-      ) {
-        return false
-      }
-
-      this.orbitController.update(
-        deltaTime,
-      )
-
-      this.render()
-
-      return true
-    },
-  })
-
-    this.activityManager =
-      new ActivityManager({
-        onActive: () => {
-          if (
-            !this.started ||
-            this.disposed
-          ) {
-            return
-          }
-
-          this.render()
-        },
-
-        onIdle: () => {
-          this.frameLoop.stop()
-        },
-      })
-
     this.resize()
 
-    globalThis.addEventListener(
-      'resize',
-      this.handleResize,
+    this.resizeObserver =
+      new ResizeObserver(this.handleResize)
+
+    this.resizeObserver.observe(container)
+
+    this.renderer.domElement.addEventListener(
+      'webglcontextrestored',
+      this.handleContextRestored,
     )
   }
 
@@ -145,6 +130,10 @@ export class Engine {
     return this.renderer.domElement
   }
 
+  get stats(): RendererStats {
+    return this.renderer.stats
+  }
+
   start(): void {
     if (
       this.disposed ||
@@ -155,9 +144,7 @@ export class Engine {
 
     this.started = true
 
-    this.activityManager.start()
-
-    this.render()
+    this.requestRender()
   }
 
   stop(): void {
@@ -170,11 +157,14 @@ export class Engine {
 
     this.started = false
 
-    this.frameLoop.stop()
-    this.activityManager.stop()
+    this.scheduler.cancel()
   }
 
-  wake(): void {
+  /**
+   * The single entry point for "something visual
+   * changed". Coalesced: call it as often as needed.
+   */
+  requestRender(): void {
     if (
       this.disposed ||
       !this.started
@@ -182,7 +172,22 @@ export class Engine {
       return
     }
 
-    this.activityManager.notifyActivity()
+    this.scheduler.invalidate()
+  }
+
+  /**
+   * Notified (before the frame renders) whenever the
+   * camera actually moved: drag, wheel, inertia, reset.
+   * Used to re-evaluate hover under a stationary pointer.
+   */
+  subscribeCameraMoved(
+    listener: () => void,
+  ): () => void {
+    this.cameraMovedListeners.add(listener)
+
+    return () => {
+      this.cameraMovedListeners.delete(listener)
+    }
   }
 
   resetView(): void {
@@ -193,115 +198,78 @@ export class Engine {
       return
     }
 
-    this.wake()
+    // reset() fires 'change', which marks the camera
+    // dirty and schedules exactly one frame.
     this.orbitController.reset()
-
-    this.render()
-  }
-
-  renderNow(): void {
-    if (
-      this.disposed ||
-      !this.started ||
-      this.activityManager.isIdle()
-    ) {
-      return
-    }
-
-    this.render()
-  }
-
-  startMotion(): void {
-    if (
-      this.disposed ||
-      !this.started ||
-      this.activityManager.isIdle()
-    ) {
-      return
-    }
-
-    this.frameLoop.start()
-  }
-
-  stopMotion(): void {
-    this.frameLoop.stop()
-  }
-
-  isRunning(): boolean {
-    return this.started
-  }
-
-  isActive(): boolean {
-    return this.activityManager.isActive()
-  }
-
-  isIdle(): boolean {
-    return this.activityManager.isIdle()
   }
 
   isAnimating(): boolean {
-    return this.frameLoop.isRunning()
+    return this.scheduler.isScheduled()
   }
 
   dispose(): void {
-  if (this.disposed) {
-    return
-  }
+    if (this.disposed) {
+      return
+    }
 
-  this.disposed = true
-  this.started = false
+    this.disposed = true
+    this.started = false
 
-    globalThis.removeEventListener(
-      'resize',
-    this.handleResize,
+    this.resizeObserver.disconnect()
+
+    this.renderer.domElement.removeEventListener(
+      'webglcontextrestored',
+      this.handleContextRestored,
     )
-    this.frameLoop.dispose()
-    this.activityManager.dispose()
+
+    this.cameraMovedListeners.clear()
+
+    this.scheduler.dispose()
     this.orbitController.dispose()
     this.world.dispose()
     this.renderer.dispose()
   }
 
-  private handleOrbitStart(): void {
+  /**
+   * One frame = advance camera, let listeners react,
+   * render ONCE. Returns true only while the camera
+   * is still moving.
+   */
+  private frame(deltaTime: number): boolean {
     if (
       this.disposed ||
       !this.started
     ) {
-      return
+      return false
     }
 
-    this.wake()
-    this.frameLoop.start()
-  }
+    const cameraMoving =
+      this.orbitController.update(deltaTime)
 
-  private handleOrbitChange(): void {
     if (
-      this.disposed ||
-      !this.started
+      cameraMoving ||
+      this.cameraDirty
     ) {
-      return
+      this.cameraDirty = false
+
+      this.notifyCameraMoved()
     }
 
-    this.wake()
     this.render()
+
+    return cameraMoving
   }
 
-  private handleOrbitEnd(): void {
-    if (
-      this.disposed ||
-      !this.started
-    ) {
-      return
+  private notifyCameraMoved(): void {
+    for (const listener of this.cameraMovedListeners) {
+      listener()
     }
-
-    this.wake()
   }
 
   private render(): void {
     if (
       this.disposed ||
-      !this.started ||
-      this.activityManager.isIdle()
+      !this.started
     ) {
       return
     }

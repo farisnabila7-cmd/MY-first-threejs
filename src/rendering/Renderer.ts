@@ -10,9 +10,21 @@ import {
 
 const MAX_PIXEL_RATIO = 2
 
+export interface RendererStats {
+  /** Total render() calls since creation. Must NOT grow while idle. */
+  readonly frames: number
+  /** Draw calls of the last frame. */
+  readonly drawCalls: number
+  readonly triangles: number
+  readonly geometries: number
+  readonly textures: number
+}
+
 export class Renderer {
   private readonly renderer:
     WebGLRenderer
+
+  private frames = 0
 
   private disposed = false
 
@@ -43,6 +55,18 @@ export class Renderer {
     return this.renderer.domElement
   }
 
+  get stats(): RendererStats {
+    const { info } = this.renderer
+
+    return {
+      frames: this.frames,
+      drawCalls: info.render.calls,
+      triangles: info.render.triangles,
+      geometries: info.memory.geometries,
+      textures: info.memory.textures,
+    }
+  }
+
   render(
     scene: Scene,
     camera: Camera,
@@ -50,6 +74,8 @@ export class Renderer {
     if (this.disposed) {
       return
     }
+
+    this.frames += 1
 
     this.renderer.render(
       scene,
@@ -80,6 +106,14 @@ export class Renderer {
     this.disposed = true
 
     this.renderer.dispose()
+
+    /*
+     * dispose() frees three.js bookkeeping, but the
+     * browser keeps the GL context alive until GC.
+     * Browsers cap live contexts (~16), so release
+     * it explicitly.
+     */
+    this.renderer.forceContextLoss()
 
     const canvas =
       this.renderer.domElement

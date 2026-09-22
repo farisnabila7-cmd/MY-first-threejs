@@ -1,4 +1,4 @@
-import type { PeriodicTableElement } from '../../domain/periodic-table/PeriodicTableElement.ts'
+import type { PeriodicTableElement } from '../../domain/periodic-table/PeriodicTableElement'
 
 const TILE_GAP = 1.05
 
