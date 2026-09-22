@@ -12,10 +12,17 @@ const application = new Application(app)
 application.start()
 
 if (import.meta.env.DEV) {
-  /*
-   * Dev-only budget probe. In the console:
-   *   const a = __app.getStats(); await sleep(5000); __app.getStats().frames === a.frames
-   * must be true while you are not touching the page.
+  /**
+   * Utilitas pengembangan: sematkan aplikasi ke cakupan global (global scope) untuk proses debugging performa.
+   *
+   * Penggunaan di konsol peramban (browser console):
+   * ```
+   * const stats = __app.getStats()
+   * await new Promise(r => setTimeout(r, 5000))
+   * console.assert(__app.getStats().frames === stats.frames, 'Jumlah frame berubah!')
+   * ```
+   *
+   * Jika frame tidak berubah, scene dalam posisi diam/idle (bagus). Jika frame berubah, proses rendering masih berjalan.
    */
   Object.assign(globalThis, { __app: application })
 
