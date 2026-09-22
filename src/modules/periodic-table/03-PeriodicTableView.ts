@@ -108,9 +108,9 @@ export class PeriodicTableView {
   }
 
   /**
-   * @param worldX World space X coordinate
-   * @param worldY World space Y coordinate
-   * @returns Tile ID at position or null
+   * @param worldX World X coordinate
+   * @param worldY World Y coordinate
+   * @returns Tile ID: Posisisi & null
    */
   pick(worldX: number, worldY: number): number | null {
     if (this.disposed) {
