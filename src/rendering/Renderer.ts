@@ -1,19 +1,10 @@
-import type {
-  Camera,
-  Scene,
-} from 'three'
-
-import {
-  SRGBColorSpace,
-  WebGLRenderer,
-} from 'three'
+import type { Camera, Scene } from 'three'
+import { SRGBColorSpace, WebGLRenderer } from 'three'
 
 const MAX_PIXEL_RATIO = 2
 
 export interface RendererStats {
-  /** Total render() calls since creation. Must NOT grow while idle. */
   readonly frames: number
-  /** Draw calls of the last frame. */
   readonly drawCalls: number
   readonly triangles: number
   readonly geometries: number
@@ -21,34 +12,15 @@ export interface RendererStats {
 }
 
 export class Renderer {
-  private readonly renderer:
-    WebGLRenderer
-
+  private readonly renderer: WebGLRenderer
   private frames = 0
-
   private disposed = false
 
-  constructor(
-    container: HTMLElement,
-  ) {
-    this.renderer =
-      new WebGLRenderer({
-        antialias: true,
-      })
-
-    this.renderer.outputColorSpace =
-      SRGBColorSpace
-
-    this.renderer.setPixelRatio(
-      Math.min(
-        globalThis.devicePixelRatio,
-        MAX_PIXEL_RATIO,
-      ),
-    )
-
-    container.appendChild(
-      this.renderer.domElement,
-    )
+  constructor(container: HTMLElement) {
+    this.renderer = new WebGLRenderer({ antialias: true })
+    this.renderer.outputColorSpace = SRGBColorSpace
+    this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio, MAX_PIXEL_RATIO))
+    container.appendChild(this.renderer.domElement)
   }
 
   get domElement(): HTMLCanvasElement {
@@ -57,7 +29,6 @@ export class Renderer {
 
   get stats(): RendererStats {
     const { info } = this.renderer
-
     return {
       frames: this.frames,
       drawCalls: info.render.calls,
@@ -67,57 +38,24 @@ export class Renderer {
     }
   }
 
-  render(
-    scene: Scene,
-    camera: Camera,
-  ): void {
-    if (this.disposed) {
-      return
-    }
-
+  render(scene: Scene, camera: Camera): void {
+    if (this.disposed) return
     this.frames += 1
-
-    this.renderer.render(
-      scene,
-      camera,
-    )
+    this.renderer.render(scene, camera)
   }
 
-  resize(
-    width: number,
-    height: number,
-  ): void {
-    if (this.disposed) {
-      return
-    }
-
-    this.renderer.setSize(
-      width,
-      height,
-      false,
-    )
+  resize(width: number, height: number): void {
+    if (this.disposed) return
+    this.renderer.setSize(width, height, false)
   }
 
   dispose(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.disposed = true
-
     this.renderer.dispose()
-
-    /*
-     * dispose() frees three.js bookkeeping, but the
-     * browser keeps the GL context alive until GC.
-     * Browsers cap live contexts (~16), so release
-     * it explicitly.
-     */
     this.renderer.forceContextLoss()
 
-    const canvas =
-      this.renderer.domElement
-
+    const canvas = this.renderer.domElement
     if (canvas.parentElement) {
       canvas.remove()
     }
