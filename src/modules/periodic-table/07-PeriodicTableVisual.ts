@@ -1,13 +1,7 @@
 import type { Color } from 'three'
+import type { PeriodicTableCategory } from '../../domain/periodic-table/PeriodicTableElement'
 
-import type {
-  PeriodicTableCategory,
-} from '../../domain/periodic-table/PeriodicTableElement'
-
-export type TileVisualState =
-  | 'normal'
-  | 'hover'
-  | 'selected'
+export type TileVisualState = 'normal' | 'hover' | 'selected'
 
 const SELECTION_COLOR = 0xffffff
 const HOVER_BRIGHTNESS = 0.12
@@ -31,21 +25,12 @@ const CATEGORY_COLORS: Record<PeriodicTableCategory, number> = {
   actinide: 0xa855f7,
 }
 
-/**
- * Pure visual mapping: (base color, state) -> color/scale.
- * It owns no three.js resources and holds no state.
- */
 export class PeriodicTableVisual {
   getBaseColor(category: PeriodicTableCategory): number {
     return CATEGORY_COLORS[category]
   }
 
-  /** Writes the resolved tile color into `target`. */
-  resolveColor(
-    target: Color,
-    baseColor: number,
-    state: TileVisualState,
-  ): void {
+  resolveColor(target: Color, baseColor: number, state: TileVisualState): void {
     if (state === 'selected') {
       target.setHex(SELECTION_COLOR)
       return
