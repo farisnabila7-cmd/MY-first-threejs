@@ -53,7 +53,6 @@ export class Application {
     this.engine.start()
   }
 
-  /** Dev/test hook: frames must not grow while idle. */
   getStats(): RendererStats {
     return this.engine.stats
   }
