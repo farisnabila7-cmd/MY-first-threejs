@@ -7,40 +7,17 @@ import {
   Matrix4,
   MeshBasicMaterial,
 } from 'three'
-
-import type {
-  PeriodicTableElement,
-} from '../../domain/periodic-table/PeriodicTableElement'
-
-import type {
-  PeriodicTableCatalog,
-} from '../../domain/periodic-table/PeriodicTableCatalog'
-
-import type {
-  PeriodicTableLayout,
-} from './02-PeriodicTableLayout'
-
-import type {
-  PeriodicTableVisual,
-  TileVisualState,
-} from './07-PeriodicTableVisual'
-
-import {
-  PeriodicTableSpatialIndex,
-} from './05-PeriodicTableSpatialIndex'
-
-import {
-  PeriodicTableLabelAtlas,
-} from './06-PeriodicTableLabel'
+import type { PeriodicTableElement } from '../../domain/periodic-table/PeriodicTableElement'
+import type { PeriodicTableCatalog } from '../../domain/periodic-table/PeriodicTableCatalog'
+import type { PeriodicTableLayout } from './02-PeriodicTableLayout'
+import type { PeriodicTableVisual, TileVisualState } from './07-PeriodicTableVisual'
+import { PeriodicTableSpatialIndex } from './05-PeriodicTableSpatialIndex'
+import { PeriodicTableLabelAtlas } from './06-PeriodicTableLabel'
 
 const TILE_WIDTH = 0.9
 const TILE_HEIGHT = 0.9
 const TILE_DEPTH = 0.18
 
-/**
- * Stable identity of a tile is the atomic number.
- * `index` is its slot inside the InstancedMesh.
- */
 interface TileRecord {
   readonly id: number
   readonly index: number
@@ -50,48 +27,23 @@ interface TileRecord {
   readonly baseColor: number
 }
 
-/**
- * Renders all tiles with ONE InstancedMesh
- * plus ONE label mesh.
- *
- * Visual state is DERIVED, never "restored":
- *
- *   state(tile) = selected ? 'selected'
- *               : hovered  ? 'hover'
- *               : 'normal'
- *
- * so hover/selection can never drift out of sync.
- *
- * Every mutator returns true when something visible
- * changed, so callers know whether to request a render.
- */
 export class PeriodicTableView {
   readonly object: Group
-
-  /** World Z of the tile face facing +Z (pick plane). */
   readonly frontFaceZ = TILE_DEPTH / 2
 
   private readonly geometry: BoxGeometry
   private readonly material: MeshBasicMaterial
   private readonly tiles: InstancedMesh
   private readonly labels: PeriodicTableLabelAtlas
-
   private readonly visual: PeriodicTableVisual
   private readonly records: readonly TileRecord[]
-
-  private readonly recordById =
-    new Map<number, TileRecord>()
-
-  private readonly spatialIndex =
-    new PeriodicTableSpatialIndex<TileRecord>()
-
-  /** Scratch objects: zero allocation per hover/select. */
+  private readonly recordById = new Map<number, TileRecord>()
+  private readonly spatialIndex = new PeriodicTableSpatialIndex<TileRecord>()
   private readonly scratchColor = new Color()
   private readonly scratchMatrix = new Matrix4()
 
   private hoveredId: number | null = null
   private selectedId: number | null = null
-
   private disposed = false
 
   constructor(
@@ -109,141 +61,82 @@ export class PeriodicTableView {
         id: element.atomicNumber,
         x: layout.getX(element),
         y: layout.getY(element),
-        baseColor:
-          visual.getBaseColor(
-            element.category,
-          ),
+        baseColor: visual.getBaseColor(element.category),
       }))
 
-    this.geometry = new BoxGeometry(
-      TILE_WIDTH,
-      TILE_HEIGHT,
-      TILE_DEPTH,
+    this.geometry = new BoxGeometry(TILE_WIDTH, TILE_HEIGHT, TILE_DEPTH)
+
+    this.material = new MeshBasicMaterial()
+
+    this.tiles = new InstancedMesh(
+      this.geometry,
+      this.material,
+      this.records.length,
     )
 
-    /*
-     * White base:
-     * per-instance color multiplies it.
-     */
-    this.material =
-      new MeshBasicMaterial()
+    this.tiles.name = 'PeriodicTableTiles'
+    this.tiles.instanceMatrix.setUsage(DynamicDrawUsage)
+    this.tiles.frustumCulled = false
 
-    this.tiles =
-      new InstancedMesh(
-        this.geometry,
-        this.material,
-        this.records.length,
-      )
+    this.labels = new PeriodicTableLabelAtlas(this.records, TILE_DEPTH)
 
-    this.tiles.name =
-      'PeriodicTableTiles'
-
-    this.tiles.instanceMatrix.setUsage(
-      DynamicDrawUsage,
-    )
-
-    /*
-     * Bounding volume is computed once
-     * from initial instances.
-     *
-     * Hover scale would make it stale.
-     */
-    this.tiles.frustumCulled =
-      false
-
-    this.labels =
-      new PeriodicTableLabelAtlas(
-        this.records,
-        TILE_DEPTH,
-      )
-
-    for (
-      const record of this.records
-    ) {
-      this.recordById.set(
-        record.id,
-        record,
-      )
-
-      this.spatialIndex.register(
-        record,
-      )
-
+    for (const record of this.records) {
+      this.recordById.set(record.id, record)
+      this.spatialIndex.register(record)
       this.paint(record)
     }
 
-    /*
-     * instanceColor exists only after
-     * the first setColorAt().
-     */
-    this.tiles.instanceColor
-      ?.setUsage(
-        DynamicDrawUsage,
-      )
+    this.tiles.instanceColor?.setUsage(DynamicDrawUsage)
 
     this.commit()
 
     this.object = new Group()
-
-    this.object.name =
-      'PeriodicTableView'
-
-    this.object.add(
-      this.tiles,
-      this.labels.object,
-    )
+    this.object.name = 'PeriodicTableView'
+    this.object.add(this.tiles, this.labels.object)
   }
 
   get hoveredTileId(): number | null {
     return this.hoveredId
   }
 
-  getElement(
-    id: number,
-  ): PeriodicTableElement | undefined {
-    return this.recordById
-      .get(id)
-      ?.element
+  /**
+   * @param id Element atomic number
+   * @returns Element or undefined if not found
+   */
+  getElement(id: number): PeriodicTableElement | undefined {
+    return this.recordById.get(id)?.element
   }
 
-  /** Tile id under a world-space point on the table plane. */
-  pick(
-    worldX: number,
-    worldY: number,
-  ): number | null {
+  /**
+   * @param worldX World space X coordinate
+   * @param worldY World space Y coordinate
+   * @returns Tile ID at position or null
+   */
+  pick(worldX: number, worldY: number): number | null {
     if (this.disposed) {
       return null
     }
 
-    return this.spatialIndex
-      .getAtWorldPosition(
-        worldX,
-        worldY,
-      )
-      ?.id ?? null
+    return this.spatialIndex.getAtWorldPosition(worldX, worldY)?.id ?? null
   }
 
-  setHovered(
-    id: number | null,
-  ): boolean {
+  /**
+   * @param id Tile ID to hover (null to clear)
+   * @returns true if visual changed
+   */
+  setHovered(id: number | null): boolean {
     if (this.disposed) {
       return false
     }
 
-    const next =
-      this.normalize(id)
+    const next = this.normalize(id)
 
-    if (
-      next === this.hoveredId
-    ) {
+    if (next === this.hoveredId) {
       return false
     }
 
-    const previous =
-      this.hoveredId
-
-    this.hoveredId =
-      next
+    const previous = this.hoveredId
+    this.hoveredId = next
 
     this.repaint(previous)
     this.repaint(next)
@@ -252,27 +145,23 @@ export class PeriodicTableView {
     return true
   }
 
-  setSelected(
-    id: number | null,
-  ): boolean {
+  /**
+   * @param id Tile ID to select (null to clear)
+   * @returns true if visual changed
+   */
+  setSelected(id: number | null): boolean {
     if (this.disposed) {
       return false
     }
 
-    const next =
-      this.normalize(id)
+    const next = this.normalize(id)
 
-    if (
-      next === this.selectedId
-    ) {
+    if (next === this.selectedId) {
       return false
     }
 
-    const previous =
-      this.selectedId
-
-    this.selectedId =
-      next
+    const previous = this.selectedId
+    this.selectedId = next
 
     this.repaint(previous)
     this.repaint(next)
@@ -306,9 +195,7 @@ export class PeriodicTableView {
     this.selectedId = null
   }
 
-  private normalize(
-    id: number | null,
-  ): number | null {
+  private normalize(id: number | null): number | null {
     if (id === null) {
       return null
     }
@@ -320,9 +207,7 @@ export class PeriodicTableView {
     return null
   }
 
-  private resolveState(
-    id: number,
-  ): TileVisualState {
+  private resolveState(id: number): TileVisualState {
     if (id === this.selectedId) {
       return 'selected'
     }
@@ -334,66 +219,38 @@ export class PeriodicTableView {
     return 'normal'
   }
 
-  private repaint(
-    id: number | null,
-  ): void {
+  private repaint(id: number | null): void {
     if (id === null) {
       return
     }
 
-    const record =
-      this.recordById.get(id)
+    const record = this.recordById.get(id)
 
     if (record) {
       this.paint(record)
     }
   }
 
-  private paint(
-    record: TileRecord,
-  ): void {
-    const state =
-      this.resolveState(record.id)
+  private paint(record: TileRecord): void {
+    const state = this.resolveState(record.id)
+    const scale = this.visual.getScale(state)
 
-    const scale =
-      this.visual.getScale(state)
+    this.visual.resolveColor(this.scratchColor, record.baseColor, state)
 
-    this.visual.resolveColor(
-      this.scratchColor,
-      record.baseColor,
-      state,
-    )
-
-    this.tiles.setColorAt(
-      record.index,
-      this.scratchColor,
-    )
+    this.tiles.setColorAt(record.index, this.scratchColor)
 
     this.scratchMatrix
-      .makeScale(
-        scale,
-        scale,
-        scale,
-      )
-      .setPosition(
-        record.x,
-        record.y,
-        0,
-      )
+      .makeScale(scale, scale, scale)
+      .setPosition(record.x, record.y, 0)
 
-    this.tiles.setMatrixAt(
-      record.index,
-      this.scratchMatrix,
-    )
+    this.tiles.setMatrixAt(record.index, this.scratchMatrix)
   }
 
   private commit(): void {
-    this.tiles.instanceMatrix.needsUpdate =
-      true
+    this.tiles.instanceMatrix.needsUpdate = true
 
     if (this.tiles.instanceColor) {
-      this.tiles.instanceColor.needsUpdate =
-        true
+      this.tiles.instanceColor.needsUpdate = true
     }
   }
 }
