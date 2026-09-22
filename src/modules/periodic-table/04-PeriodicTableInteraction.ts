@@ -5,17 +5,6 @@ import type { PeriodicTableView } from './03-PeriodicTableView'
 
 const DRAG_THRESHOLD_SQUARED = 25
 
-/**
- * Who owns the pointer right now?
- *
- *  idle       -> hover owns it (mouse/pen only)
- *  pressed    -> a button is down, undecided: click or drag?
- *  navigating -> drag confirmed; OrbitControls owns it.
- *               Hover is cleared and suppressed.
- *
- * Any button counts (LMB orbit, RMB pan, MMB dolly), so
- * there is no per-button special casing for hover.
- */
 type PointerPhase = 'idle' | 'pressed' | 'navigating'
 
 export interface PeriodicTableInteractionOptions {
@@ -32,8 +21,6 @@ export class PeriodicTableInteraction {
   private readonly view: PeriodicTableView
   private readonly onSelect: (element: PeriodicTableElement) => void
   private readonly requestRender: () => void
-
-  /** Persistent math objects: no allocation per pick. */
   private readonly ray = new Ray()
   private readonly tablePlane = new Plane(new Vector3(0, 0, 1), 0)
   private readonly worldPoint = new Vector3()
@@ -43,78 +30,45 @@ export class PeriodicTableInteraction {
   private pressButton = 0
   private pressX = 0
   private pressY = 0
-
-  /** Last pointer position, relative to the canvas. */
   private pointerX = 0
   private pointerY = 0
   private hasPointer = false
   private hoverCapable = true
-
   private cursor = ''
   private disposed = false
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
-    if (this.disposed || !event.isPrimary) {
-      return
-    }
-
+    if (this.disposed || !event.isPrimary) return
     this.phase = 'pressed'
     this.pressPointerId = event.pointerId
     this.pressButton = event.button
     this.pressX = event.clientX
     this.pressY = event.clientY
-
     this.trackPointer(event)
   }
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
-    if (this.disposed) {
-      return
-    }
-
-    if (
-      this.phase !== 'idle' &&
-      event.pointerId !== this.pressPointerId
-    ) {
-      return
-    }
-
+    if (this.disposed) return
+    if (this.phase !== 'idle' && event.pointerId !== this.pressPointerId) return
     this.trackPointer(event)
-
     if (this.phase === 'pressed') {
       this.promoteIfDragging(event)
       return
     }
-
     if (this.phase === 'idle') {
       this.refreshHover()
     }
   }
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
-    if (
-      this.disposed ||
-      event.pointerId !== this.pressPointerId
-    ) {
-      return
-    }
-
-    const isClick =
-      this.phase === 'pressed' &&
-      this.pressButton === 0 &&
-      event.button === 0
-
+    if (this.disposed || event.pointerId !== this.pressPointerId) return
+    const isClick = this.phase === 'pressed' && this.pressButton === 0 && event.button === 0
     this.phase = 'idle'
     this.pressPointerId = null
-
     this.trackPointer(event)
-
     if (isClick) {
       this.selectAtPointer()
     }
-
-    // Reacquire hover under the pointer without waiting
-    // for the next mouse move.
     this.refreshHover()
     this.updateCursor()
   }
@@ -123,11 +77,6 @@ export class PeriodicTableInteraction {
     this.abortGesture()
   }
 
-  /*
-   * Also fires after a NORMAL pointerup (capture is
-   * released implicitly). At that point phase is already
-   * 'idle', so it must not clear the hover we just set.
-   */
   private readonly handleLostCapture = (): void => {
     if (this.phase !== 'idle') {
       this.abortGesture()
@@ -135,28 +84,15 @@ export class PeriodicTableInteraction {
   }
 
   private readonly handlePointerLeave = (): void => {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.hasPointer = false
-
     if (this.phase === 'idle') {
       this.clearHover()
     }
   }
 
-  /**
-   * Bound so it can be passed straight to the engine.
-   * Camera moved under a (possibly stationary) pointer:
-   * wheel zoom, damping inertia, reset. Re-pick, but
-   * never while a drag owns the pointer.
-   */
   readonly handleCameraMoved = (): void => {
-    if (this.disposed || this.phase !== 'idle') {
-      return
-    }
-
+    if (this.disposed || this.phase !== 'idle') return
     this.refreshHover()
   }
 
@@ -166,7 +102,6 @@ export class PeriodicTableInteraction {
     this.view = options.view
     this.onSelect = options.onSelect
     this.requestRender = options.requestRender
-
     this.element.addEventListener('pointerdown', this.handlePointerDown)
     this.element.addEventListener('pointerup', this.handlePointerUp)
     this.element.addEventListener('pointermove', this.handlePointerMove)
@@ -176,29 +111,21 @@ export class PeriodicTableInteraction {
   }
 
   dispose(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.disposed = true
-
     this.element.removeEventListener('pointerdown', this.handlePointerDown)
     this.element.removeEventListener('pointerup', this.handlePointerUp)
     this.element.removeEventListener('pointermove', this.handlePointerMove)
     this.element.removeEventListener('pointerleave', this.handlePointerLeave)
     this.element.removeEventListener('pointercancel', this.handlePointerCancel)
     this.element.removeEventListener('lostpointercapture', this.handleLostCapture)
-
     this.element.style.cursor = ''
-
     this.phase = 'idle'
     this.pressPointerId = null
     this.hasPointer = false
   }
 
   private trackPointer(event: PointerEvent): void {
-    // offsetX/Y are relative to the canvas: no
-    // getBoundingClientRect, no cached bounds to go stale.
     this.pointerX = event.offsetX
     this.pointerY = event.offsetY
     this.hasPointer = true
@@ -208,40 +135,26 @@ export class PeriodicTableInteraction {
   private promoteIfDragging(event: PointerEvent): void {
     const deltaX = event.clientX - this.pressX
     const deltaY = event.clientY - this.pressY
-
     const movedSquared = (deltaX * deltaX) + (deltaY * deltaY)
-
-    if (movedSquared <= DRAG_THRESHOLD_SQUARED) {
-      return
-    }
-
+    if (movedSquared <= DRAG_THRESHOLD_SQUARED) return
     this.phase = 'navigating'
-
     this.clearHover()
     this.updateCursor()
   }
 
   private abortGesture(): void {
-    if (this.disposed) {
-      return
-    }
-
+    if (this.disposed) return
     this.phase = 'idle'
     this.pressPointerId = null
-
     this.clearHover()
     this.updateCursor()
   }
 
   private refreshHover(): void {
-    if (!this.hasPointer || !this.hoverCapable) {
-      return
-    }
-
+    if (!this.hasPointer || !this.hoverCapable) return
     if (this.view.setHovered(this.pickAtPointer())) {
       this.requestRender()
     }
-
     this.updateCursor()
   }
 
@@ -249,37 +162,23 @@ export class PeriodicTableInteraction {
     if (this.view.setHovered(null)) {
       this.requestRender()
     }
-
     this.updateCursor()
   }
 
   private selectAtPointer(): void {
     const id = this.pickAtPointer()
-
-    if (id === null) {
-      return
-    }
-
+    if (id === null) return
     const element = this.view.getElement(id)
-
-    if (!element) {
-      return
-    }
-
+    if (!element) return
     if (this.view.setSelected(id)) {
       this.requestRender()
     }
-
     this.onSelect(element)
   }
 
   private updateCursor(): void {
     const next = this.resolveCursor()
-
-    if (next === this.cursor) {
-      return
-    }
-
+    if (next === this.cursor) return
     this.cursor = next
     this.element.style.cursor = next
   }
@@ -288,71 +187,41 @@ export class PeriodicTableInteraction {
     if (this.phase === 'navigating') {
       return 'grabbing'
     }
-
     if (this.view.hoveredTileId !== null) {
       return 'pointer'
     }
-
     return ''
   }
 
   private pickAtPointer(): number | null {
-  const width = this.element.clientWidth
-  const height = this.element.clientHeight
+    const width = this.element.clientWidth
+    const height = this.element.clientHeight
+    if (width <= 0 || height <= 0) return null
 
-  if (width <= 0 || height <= 0) {
-    return null
-  }
+    this.camera.updateMatrixWorld()
 
-  // matrixWorld lags OrbitControls until the next render.
-  this.camera.updateMatrixWorld()
+    const ndcX = ((this.pointerX / width) * 2) - 1
+    const ndcY = 1 - ((this.pointerY / height) * 2)
 
-  const ndcX =
-    ((this.pointerX / width) * 2) - 1
+    this.ray.origin.setFromMatrixPosition(this.camera.matrixWorld)
+    this.ray.direction
+      .set(ndcX, ndcY, 0.5)
+      .unproject(this.camera)
+      .sub(this.ray.origin)
+      .normalize()
 
-  const ndcY =
-    1 - ((this.pointerY / height) * 2)
+    const faceZ = this.view.frontFaceZ
+    const seesFront = this.ray.origin.z >= 0
 
-  this.ray.origin.setFromMatrixPosition(
-    this.camera.matrixWorld,
-  )
+    if (seesFront) {
+      this.tablePlane.constant = -faceZ
+    } else {
+      this.tablePlane.constant = faceZ
+    }
 
-  this.ray.direction
-    .set(ndcX, ndcY, 0.5)
-    .unproject(this.camera)
-    .sub(this.ray.origin)
-    .normalize()
+    const hit = this.ray.intersectPlane(this.tablePlane, this.worldPoint)
+    if (!hit) return null
 
-  // Intersect the face the user actually sees,
-  // not z=0.
-  //
-  // This prevents oblique views from mis-picking
-  // because of the tile depth.
-  const faceZ =
-    this.view.frontFaceZ
-
-  const seesFront =
-    this.ray.origin.z >= 0
-
-  if (seesFront) {
-    this.tablePlane.constant = -faceZ
-  } else {
-    this.tablePlane.constant = faceZ
-  }
-
-  const hit =
-    this.ray.intersectPlane(
-      this.tablePlane,
-      this.worldPoint,
-    )
-
-  if (!hit) {
-    return null
-  }
-
-  return this.view.pick(
-    hit.x,
-    hit.y,
-    )
+    return this.view.pick(hit.x, hit.y)
   }
 }
