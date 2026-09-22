@@ -5,7 +5,7 @@ export default defineConfig({
   base: '/MY-first-threejs/',
 })
 
-// // ini panicked
+// // Reminder: ini panicked Rust Pada saat build missmatch binary mungkin Oxide
 // import { defineConfig } from 'vite'
 // import tailwindcss from '@tailwindcss/vite'
 
@@ -31,7 +31,7 @@ export default defineConfig({
 //   },
 // })
 
-// // mode 3 non manual chunk?
+// // mode 3 non manual chunk, masih juga gagal build panicked rust, MSYS missmatch
 // import { defineConfig } from 'vite'
 // import tailwindcss from '@tailwindcss/vite'
 
@@ -40,5 +40,3 @@ export default defineConfig({
 //     tailwindcss(),
 //   ],
 // })
-
-// C:\msys64\home\faris\projects\3js_tsc\tabel-periodik\vite.config.ts
