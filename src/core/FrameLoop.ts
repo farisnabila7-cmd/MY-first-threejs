@@ -1,12 +1,6 @@
 const MAX_DELTA_TIME = 0.1
 
 export interface FrameLoopListener {
-  /**
-   * Executes one frame of work.
-   *
-   * Return true when another frame is required.
-   * Return false when the current demand is complete.
-   */
   update(deltaTime: number): boolean
 }
 
